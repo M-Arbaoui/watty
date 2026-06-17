@@ -450,32 +450,16 @@ async function runMoodSearch(){
   setMoodLoading(true);
 
   try{
-    const key=document.querySelector('meta[name="anthropic-key"]')?.content||'';
-    if(!key||key==='YOUR_ANTHROPIC_KEY_HERE') throw new Error('no_key');
-
-    // Ask Claude to parse mood into TMDB params
-    const res=await fetch('https://api.anthropic.com/v1/messages',{
+    // Call our own serverless function — Gemini key stays server-side
+    const res=await fetch('/api/mood',{
       method:'POST',
-      headers:{
-        'Content-Type':'application/json',
-        'x-api-key':key,
-        'anthropic-version':'2023-06-01',
-        'anthropic-dangerous-direct-browser-access':'true',
-      },
-      body:JSON.stringify({
-        model:'claude-sonnet-4-6',
-        max_tokens:400,
-        system:`You are a movie/TV recommendation engine. Extract TMDB discover params from the user's mood description.
-Reply ONLY with valid JSON, no markdown.
-Schema: { "type":"movie"|"tv"|"both", "genres":[ids], "sort_by":"popularity.desc"|"vote_average.desc", "vote_average_gte":number, "vote_count_gte":number, "decade_start":number, "decade_end":number, "summary":"1 sentence of what you understood" }
-Genre IDs: action=28,adventure=12,animation=16,comedy=35,crime=80,documentary=99,drama=18,fantasy=14,horror=27,mystery=9648,romance=10749,sci-fi=878,thriller=53,war=10752,western=37`,
-        messages:[{role:'user',content:mood}],
-      }),
+      headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ mood }),
     });
     if(!res.ok) throw new Error('api_fail');
-    const data=await res.json();
-    const text=data.content.find(b=>b.type==='text')?.text||'{}';
-    const params=JSON.parse(text.replace(/```json|```/g,'').trim());
+    const params=await res.json();
+    if(params.error) throw new Error('api_fail');
+
     const items=await fetchMoodResults(params);
     renderMoodResults(items, params.summary);
     if(items[0]?.backdrop_path){
@@ -483,19 +467,15 @@ Genre IDs: action=28,adventure=12,animation=16,comedy=35,crime=80,documentary=99
       $('mood-bg').classList.add('loaded');
     }
   } catch(err){
-    if(err.message==='no_key'){
-      // Fallback: basic genre/popularity discover without AI
-      const fallback=await fallbackMoodSearch(mood);
-      renderMoodResults(fallback.items, fallback.summary);
-    } else {
-      $('mood-hint').textContent='Something went wrong. Try again.'; $('mood-hint').style.display='block';
-    }
+    // Fallback: basic genre/popularity discover without AI (works even if /api/mood is down)
+    const fallback=await fallbackMoodSearch(mood);
+    renderMoodResults(fallback.items, fallback.summary);
   } finally {
     setMoodLoading(false);
   }
 }
 
-/* Fallback without API key — keyword matching */
+/* Fallback without API — keyword matching */
 async function fallbackMoodSearch(mood){
   const m=mood.toLowerCase();
   let genres=[], type='movie', sort='vote_average.desc', gte=7;
