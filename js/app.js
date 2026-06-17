@@ -9,7 +9,7 @@ const SUPABASE_KEY  = 'sb_publishable_vyUb1gEaszYOUQQuIa9yqw_7o3kPMzh';
 const TMDB_KEY      = 'e79205984c6394afec4499019f32f679';
 const TMDB_BASE     = 'https://api.themoviedb.org/3';
 const TMDB_IMG      = 'https://image.tmdb.org/t/p';
-const WATCHY_URL    = 'https://watchy-sec.vercel.app/#/title';
+const WATCHY_URL    = 'https://watchy-dot.vercel.app/#/title';
 
 /* ── helpers ── */
 const $   = id => document.getElementById(id);
@@ -59,26 +59,63 @@ const genCode = () => Math.random().toString(36).substring(2,8).toUpperCase();
 
 /* Supabase Realtime websocket */
 function connectWS(roomCode, onMsg){
-  const wsUrl=`${SUPABASE_URL.replace('https','wss')}/realtime/v1/websocket?apikey=${SUPABASE_KEY}&vsn=1.0.0`;
-  const ws=new WebSocket(wsUrl);
-  const topic=`realtime:party:${roomCode}`;
-  ws.onopen=()=>{
-    ws.send(JSON.stringify({
-      topic, event:'phx_join',
-      payload:{ config:{ broadcast:{self:false}, presence:{key:''} } },
-      ref: ++P.wsRef
-    }));
-  };
-  ws.onmessage=e=>{ try{ onMsg(JSON.parse(e.data)); }catch(_){} };
-  ws.onclose=()=>{ if(P.room) setTimeout(()=>connectWS(roomCode,onMsg),3000); };
-  return {
-    send:(event,payload)=>ws.send(JSON.stringify({
-      topic, event:'broadcast',
-      payload:{type:'broadcast',event,payload},
-      ref:++P.wsRef
-    })),
-    close:()=>{ P.room=null; ws.close(); }
-  };
+  return new Promise(resolve=>{
+    const wsUrl=`${SUPABASE_URL.replace('https','wss')}/realtime/v1/websocket?apikey=${SUPABASE_KEY}&vsn=1.0.0`;
+    const ws=new WebSocket(wsUrl);
+    const topic=`realtime:party:${roomCode}`;
+    let joined=false;
+    const sendQueue=[];
+
+    const flushQueue=()=>{
+      while(sendQueue.length){
+        const msg=sendQueue.shift();
+        ws.send(JSON.stringify(msg));
+      }
+    };
+
+    ws.onopen=()=>{
+      ws.send(JSON.stringify({
+        topic, event:'phx_join',
+        payload:{ config:{ broadcast:{self:false,ack:false}, presence:{key:''} } },
+        ref: ++P.wsRef
+      }));
+    };
+    ws.onmessage=e=>{
+      let msg; try{ msg=JSON.parse(e.data); }catch(_){ return; }
+      // Detect join confirmation
+      if(msg.event==='phx_reply' && msg.payload?.status==='ok' && !joined){
+        joined=true;
+        flushQueue();
+        resolve(channelObj);
+      }
+      onMsg(msg);
+    };
+    ws.onclose=()=>{
+      if(P.room){
+        partyStatus('🟡 Reconnecting…');
+        setTimeout(()=>{
+          connectWS(roomCode,onMsg).then(ch=>{
+            P.channel=ch;
+            partyStatus(P.isHost?'🟢 Host':'🟢 Guest');
+            ch.send('join',{user:P.user,isHost:P.isHost});
+          });
+        },2000);
+      }
+    };
+    ws.onerror=()=>{ partyStatus('🔴 Connection error'); };
+
+    const channelObj={
+      send:(event,payload)=>{
+        const m={ topic, event:'broadcast', payload:{type:'broadcast',event,payload}, ref:++P.wsRef };
+        if(joined) ws.send(JSON.stringify(m));
+        else sendQueue.push(m);
+      },
+      close:()=>{ P.room=null; ws.close(); }
+    };
+
+    // Safety timeout in case phx_reply never arrives
+    setTimeout(()=>{ if(!joined){ joined=true; flushQueue(); resolve(channelObj); } },2500);
+  });
 }
 
 function partyView(name){
@@ -129,6 +166,9 @@ function loadPartyTitle(item){
   $('nw-meta').textContent=[yr(item), typ(item)==='tv'?'Series':'Movie'].join(' · ');
   $('nw-overview').textContent=(item.overview||'').slice(0,160)+'…';
   $('nw-empty').style.display='none';
+  // Reset to info view (exit any active player) when a new title arrives
+  $('watch-iframe').src='';
+  $('nw-player').style.display='none';
   $('nw-info').style.display='flex';
   const url=typ(item)==='movie'
     ?`https://vidsrc.to/embed/movie/${item.id}`
@@ -160,11 +200,12 @@ async function createRoom(){
   if(!user){ toast('Enter your name'); return; }
   P.user=user; P.room=genCode(); P.isHost=true;
   P.members[user]={user,isHost:true};
-  P.channel=connectWS(P.room,onChannelMsg);
   $('room-code-val').textContent=P.room;
-  partyView('room'); partyStatus('🟢 Host');
+  partyView('room'); partyStatus('🟡 Connecting…');
   updateMembers();
   chatMsg('','Room created — share the code!',true);
+  P.channel=await connectWS(P.room,onChannelMsg);
+  partyStatus('🟢 Host');
   P.channel.send('join',{user,isHost:true});
 }
 
@@ -175,11 +216,12 @@ async function joinRoom(){
   if(code.length!==6){ toast('6-character code needed'); return; }
   P.user=user; P.room=code; P.isHost=false;
   P.members[user]={user,isHost:false};
-  P.channel=connectWS(P.room,onChannelMsg);
   $('room-code-val').textContent=P.room;
-  partyView('room'); partyStatus('🟢 Guest');
+  partyView('room'); partyStatus('🟡 Connecting…');
   updateMembers();
   chatMsg('','Joined — waiting for host…',true);
+  P.channel=await connectWS(P.room,onChannelMsg);
+  partyStatus('🟢 Guest');
   P.channel.send('join',{user,isHost:false});
 }
 
@@ -558,8 +600,19 @@ document.addEventListener('DOMContentLoaded',()=>{
   $('join-btn').addEventListener('click',joinRoom);
   $('leave-btn').addEventListener('click',leaveRoom);
   $('copy-code-btn').addEventListener('click',()=>{ navigator.clipboard?.writeText(P.room).then(()=>toast('Code copied!')); });
-  $('watch-btn').addEventListener('click',()=>{ const url=$('watch-btn').dataset.url; if(url){ $('watch-overlay').classList.add('open'); $('watch-iframe').src=url; } });
-  $('watch-overlay-close').addEventListener('click',()=>{ $('watch-overlay').classList.remove('open'); $('watch-iframe').src=''; });
+  $('watch-btn').addEventListener('click',()=>{
+    const url=$('watch-btn').dataset.url;
+    if(!url) return;
+    $('watch-iframe').src=url;
+    $('nw-player-title').textContent=$('nw-title').textContent;
+    $('nw-info').style.display='none';
+    $('nw-player').style.display='flex';
+  });
+  $('nw-player-exit').addEventListener('click',()=>{
+    $('watch-iframe').src='';
+    $('nw-player').style.display='none';
+    $('nw-info').style.display='flex';
+  });
   $('party-search-btn').addEventListener('click',()=>$('party-search-panel').classList.toggle('open'));
   $('party-search-input').addEventListener('input',e=>partySearch(e.target.value));
   $('chat-input').addEventListener('keydown',e=>{
