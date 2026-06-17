@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,viewport-fit=cover">
+  <title>Watchy. Companion</title>
+  <meta name="description" content="Watch together, track seasons, find your next watch.">
+  <meta name="theme-color" content="#09090B">
+  <meta property="og:title" content="Watchy. Companion">
+  <meta property="og:description" content="Watch Party · Season Tracker · MoodPick">
+  <meta property="og:image" content="https://watchy-companion.vercel.app/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <!-- 🔑 Your Anthropic key for MoodPick -->
+  <meta name="anthropic-key" content="YOUR_ANTHROPIC_KEY_HERE">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Outfit:wght@300;400;500;600&display=swap">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="nav" id="nav">
+  <button class="nav-brand" id="nav-home-btn">
+    Watchy<span class="dot">.</span>
+    <span class="nav-brand-sub">Companion</span>
+  </button>
+  <div class="nav-tabs">
+    <button class="nav-tab active" data-tab="party">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Watch Party
+    </button>
+    <button class="nav-tab" data-tab="tracker">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      Tracker
+    </button>
+    <button class="nav-tab" data-tab="mood">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+      MoodPick
+    </button>
+  </div>
+  <a class="nav-watchy-link" href="https://watchy-sec.vercel.app" target="_blank" rel="noopener">
+    Watchy ↗
+  </a>
+</nav>
+
+<!-- ══════════════════════════════════════════
+     TAB: WATCH PARTY
+     ══════════════════════════════════════════ -->
+<div class="tab-content active" id="tab-party">
+
+  <!-- LOBBY -->
+  <div class="party-view active" id="party-lobby">
+    <div class="lobby-wrap">
+      <div class="lobby-hero">
+        <h1 class="lobby-title">Watch together,<br><em>wherever you are.</em></h1>
+        <p class="lobby-sub">Create a room, share the code, pick a title — everyone watches in sync.</p>
+      </div>
+      <div class="lobby-card">
+        <div class="field">
+          <label class="field-label">Your name</label>
+          <input id="username-input" class="field-input" type="text" placeholder="e.g. Mohammed" maxlength="20" autocomplete="off">
+        </div>
+        <button class="btn-primary full" id="create-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M12 5v14M5 12h14"/></svg>
+          Create Room
+        </button>
+        <div class="lobby-divider"><span>or join</span></div>
+        <div class="join-row">
+          <input id="room-code-input" class="field-input code-input" type="text" placeholder="Room code" maxlength="6" autocomplete="off">
+          <button class="btn-ghost" id="join-btn">Join</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROOM -->
+  <div class="party-view" id="party-room">
+    <div class="room-topbar">
+      <div class="room-code-wrap">
+        <span class="room-code-label">Room</span>
+        <span class="room-code-val" id="room-code-val">——</span>
+        <button class="icon-btn" id="copy-code-btn" title="Copy code">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+      <span class="room-status" id="room-status">Connecting…</span>
+      <div class="room-topbar-right">
+        <button class="icon-btn" id="party-search-btn" title="Pick a title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        </button>
+        <button class="btn-leave" id="leave-btn">Leave</button>
+      </div>
+    </div>
+
+    <!-- Search panel -->
+    <div class="party-search-panel" id="party-search-panel">
+      <input id="party-search-input" class="ps-input" type="text" placeholder="Search a movie or series…" autocomplete="off">
+      <div class="ps-results" id="ps-results"></div>
+    </div>
+
+    <div class="room-body">
+      <!-- Left: now watching + members -->
+      <div class="room-left">
+        <div class="now-watching" id="now-watching">
+          <div class="nw-bg" id="nw-bg"></div>
+          <div class="nw-grad"></div>
+          <div class="nw-empty" id="nw-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" width="36" height="36"><rect x="2" y="2" width="20" height="20" rx="3"/><path d="m7 8 4 3-4 3V8z"/></svg>
+            <p>Host picks a title</p>
+          </div>
+          <div class="nw-info" id="nw-info" style="display:none">
+            <img id="nw-poster" class="nw-poster" src="" alt="">
+            <div class="nw-text">
+              <h2 class="nw-title" id="nw-title"></h2>
+              <div class="nw-meta" id="nw-meta"></div>
+              <p class="nw-overview" id="nw-overview"></p>
+              <button class="btn-primary" id="watch-btn" data-url="">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M8 5v14l11-7z"/></svg>
+                Watch Together
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="members-bar">
+          <span class="members-count" id="members-count">0 in room</span>
+          <div class="members-list" id="members-list"></div>
+        </div>
+      </div>
+
+      <!-- Right: chat + reactions -->
+      <div class="room-right">
+        <div class="chat-area">
+          <div class="chat-msgs" id="chat-msgs"></div>
+          <div class="chat-bottom">
+            <input id="chat-input" class="chat-input" type="text" placeholder="Say something… (Enter)" maxlength="200" autocomplete="off">
+          </div>
+        </div>
+        <div class="reactions-bar">
+          <span class="reactions-label">React</span>
+          <div class="emoji-row" id="emoji-row">
+            <button class="emoji-btn" data-emoji="❤️">❤️</button>
+            <button class="emoji-btn" data-emoji="😂">😂</button>
+            <button class="emoji-btn" data-emoji="😮">😮</button>
+            <button class="emoji-btn" data-emoji="👏">👏</button>
+            <button class="emoji-btn" data-emoji="🔥">🔥</button>
+            <button class="emoji-btn" data-emoji="💀">💀</button>
+            <button class="emoji-btn" data-emoji="😭">😭</button>
+            <button class="emoji-btn" data-emoji="🤩">🤩</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="reaction-stage" id="reaction-stage"></div>
+
+    <!-- Watch iframe overlay -->
+    <div class="watch-overlay" id="watch-overlay">
+      <button class="watch-overlay-close" id="watch-overlay-close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        Exit
+      </button>
+      <iframe id="watch-iframe" class="watch-iframe" allowfullscreen allow="autoplay; fullscreen; encrypted-media" frameborder="0" src=""></iframe>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     TAB: SEASON TRACKER
+     ══════════════════════════════════════════ -->
+<div class="tab-content" id="tab-tracker">
+
+  <!-- Library view -->
+  <div class="tracker-view active" id="tracker-library">
+    <div class="tracker-header">
+      <h1 class="tracker-title">Season Tracker</h1>
+      <button class="btn-primary" id="add-show-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M12 5v14M5 12h14"/></svg>
+        Add Show
+      </button>
+    </div>
+
+    <!-- Add show drawer -->
+    <div class="add-drawer" id="add-drawer">
+      <input id="tracker-search-input" class="field-input" type="text" placeholder="Search a TV show to track…" autocomplete="off">
+      <div class="tracker-search-results" id="tracker-search-results"></div>
+    </div>
+
+    <div class="library-empty" id="library-empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" width="44" height="44"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+      <p>No shows yet. Add one to start tracking.</p>
+    </div>
+    <div class="library-grid" id="library-grid"></div>
+  </div>
+
+  <!-- Show detail view -->
+  <div class="tracker-view" id="tracker-show">
+    <div class="show-detail-bg" id="show-detail-bg"></div>
+    <div class="show-detail-grad"></div>
+    <div class="show-detail-body">
+      <div class="show-detail-topbar">
+        <button class="btn-back" id="tracker-back-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="m15 18-6-6 6-6"/></svg>
+          Back
+        </button>
+        <button class="btn-danger" id="delete-show-btn">Remove</button>
+      </div>
+      <div class="show-hero">
+        <img id="show-poster" class="show-poster" src="" alt="">
+        <div class="show-hero-text">
+          <h2 class="show-name" id="show-name"></h2>
+          <div class="show-year" id="show-year"></div>
+          <div class="show-score" id="show-score"></div>
+          <p class="show-overview" id="show-overview"></p>
+          <div class="overall-progress">
+            <div class="op-label" id="show-total-progress"></div>
+            <div class="op-bar"><div class="op-fill" id="show-total-bar-fill"></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="seasons-list" id="seasons-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     TAB: MOODPICK
+     ══════════════════════════════════════════ -->
+<div class="tab-content" id="tab-mood">
+  <div class="mood-bg" id="mood-bg"></div>
+  <div class="mood-bg-overlay"></div>
+  <div class="mood-body">
+    <div class="mood-header">
+      <h1 class="mood-title">What are you<br><em>in the mood for?</em></h1>
+      <p class="mood-sub">Describe it — AI finds exactly what to watch.</p>
+    </div>
+
+    <div class="mood-search-box">
+      <div class="mood-loading-bar" id="mood-loading-bar" style="display:none"></div>
+      <textarea id="mood-input" class="mood-textarea" rows="3" placeholder="e.g. Something dark and slow-paced like Arrival, or a cozy show to binge this weekend…" maxlength="300"></textarea>
+      <div class="mood-search-footer">
+        <span class="mood-hint" id="mood-hint" style="display:none"></span>
+        <button class="btn-primary" id="mood-search-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+          Find It
+        </button>
+      </div>
+    </div>
+
+    <div class="mood-suggestions" id="mood-suggestions"></div>
+
+    <div class="mood-results" id="mood-results" style="display:none">
+      <div class="mood-ai-summary" id="mood-ai-summary"></div>
+      <div class="mood-grid" id="mood-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- WATCH FRAME (mood pick → watchy) is handled via link -->
+<div class="toast" id="toast"></div>
+<script src="js/app.js"></script>
+</body>
+</html>
