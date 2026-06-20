@@ -11,6 +11,15 @@ const TMDB_BASE     = 'https://api.themoviedb.org/3';
 const TMDB_IMG      = 'https://image.tmdb.org/t/p';
 const WATCHY_URL    = 'https://watchy-dot.vercel.app/#/title';
 
+/* ── Embed sources for the inline player ── */
+const SOURCES = {
+  vidsrc:    { movie:id=>`https://vidsrc.to/embed/movie/${id}`,        tv:(id,s,e)=>`https://vidsrc.to/embed/tv/${id}/${s}/${e}` },
+  vidking:   { movie:id=>`https://www.vidking.net/embed/movie/${id}`,  tv:(id,s,e)=>`https://www.vidking.net/embed/tv/${id}/${s}/${e}` },
+  vidsrcxyz: { movie:id=>`https://vidsrc.xyz/embed/movie?tmdb=${id}`,  tv:(id,s,e)=>`https://vidsrc.xyz/embed/tv?tmdb=${id}&season=${s}&episode=${e}` },
+  embed2:    { movie:id=>`https://www.2embed.cc/embed/${id}`,         tv:(id,s,e)=>`https://www.2embed.cc/embedtv/${id}&s=${s}&e=${e}` },
+};
+let currentSource = 'vidsrc';
+
 /* ── helpers ── */
 const $   = id => document.getElementById(id);
 const ttl = i  => i.title||i.name||'Untitled';
@@ -54,6 +63,12 @@ async function tmdb(path, params={}){
 const P = {
   room:null, user:null, isHost:false,
   channel:null, ws:null, wsRef:0, members:{}, item:null,
+  /* WebRTC */
+  pc:null,          // RTCPeerConnection
+  localStream:null, // Host's getDisplayMedia stream
+  remoteStream:null,// Guest receives this
+  rtcReady:false,   // true once P2P connected
+  sharingActive:false,
 };
 const genCode = () => Math.random().toString(36).substring(2,8).toUpperCase();
 
@@ -164,17 +179,11 @@ function loadPartyTitle(item){
   $('nw-poster').style.display=poster?'block':'none';
   $('nw-title').textContent=ttl(item);
   $('nw-meta').textContent=[yr(item), typ(item)==='tv'?'Series':'Movie'].join(' · ');
-  $('nw-overview').textContent=(item.overview||'').slice(0,160)+'…';
-  $('nw-empty').style.display='none';
-  // Reset to info view (exit any active player) when a new title arrives
-  $('watch-iframe').src='';
-  $('nw-player').style.display='none';
+  $('nw-overview').textContent=(item.overview||'').slice(0,140)+'…';
   $('nw-info').style.display='flex';
-  const url=typ(item)==='movie'
-    ?`https://vidsrc.to/embed/movie/${item.id}`
-    :`https://vidsrc.to/embed/tv/${item.id}/1/1`;
-  $('watch-btn').dataset.url=url;
 }
+
+function buildEmbedUrl(){ /* no-op — replaced by WebRTC */ }
 
 function onChannelMsg(msg){
   if(msg.event!=='broadcast'||msg.payload?.type!=='broadcast') return;
@@ -184,15 +193,42 @@ function onChannelMsg(msg){
     updateMembers();
     chatMsg('',`${payload.user} joined`,true);
     if(P.isHost&&P.item) setTimeout(()=>P.channel.send('sync',{item:P.item}),400);
+    // If host is sharing and a guest just joined, send them the offer
+    if(P.isHost && P.sharingActive && !payload.isHost){
+      setTimeout(()=>startWebRTCOffer(), 800);
+    }
   }
   if(event==='leave'){
     delete P.members[payload.user]; updateMembers();
     chatMsg('',`${payload.user} left`,true);
   }
-  if(event==='chat') chatMsg(payload.user,payload.text);
+  if(event==='chat') chatMsg(payload.user, payload.text, !!payload.sys);
   if(event==='reaction') spawnReaction(payload.emoji);
-  if(event==='pick'){ loadPartyTitle(payload.item); chatMsg('',`Host picked: ${ttl(payload.item)}`,true); }
+  if(event==='pick'){ loadPartyTitle(payload.item); chatMsg('',`${payload.by||'Someone'} picked: ${ttl(payload.item)}`,true); }
   if(event==='sync'&&!P.isHost) loadPartyTitle(payload.item);
+
+  /* ── WebRTC signaling ── */
+  // Guest: receives offer from host → answer it
+  if(event==='webrtc-offer' && !P.isHost){
+    handleWebRTCOffer(payload.sdp);
+  }
+  // Host: receives answer from guest
+  if(event==='webrtc-answer' && P.isHost){
+    handleWebRTCAnswer(payload.sdp);
+  }
+  // Both: exchange ICE candidates
+  if(event==='ice-candidate'){
+    handleICECandidate(payload.candidate);
+  }
+  // Guest: host stopped sharing
+  if(event==='share-stopped'){
+    setGuestStatus('disconnected');
+    chatMsg('','Host stopped screen sharing',true);
+  }
+  // Host: guest requests stream (joined after host started sharing)
+  if(event==='request-stream' && P.isHost && P.sharingActive){
+    setTimeout(()=>startWebRTCOffer(), 500);
+  }
 }
 
 async function createRoom(){
@@ -201,6 +237,10 @@ async function createRoom(){
   P.user=user; P.room=genCode(); P.isHost=true;
   P.members[user]={user,isHost:true};
   $('room-code-val').textContent=P.room;
+  $('nw-empty-sub').textContent='Use the search icon above to pick something to watch';
+  $('host-panel').style.display='flex';
+  $('guest-panel').style.display='none';
+  $('nw-empty').style.display='none';
   partyView('room'); partyStatus('🟡 Connecting…');
   updateMembers();
   chatMsg('','Room created — share the code!',true);
@@ -217,20 +257,236 @@ async function joinRoom(){
   P.user=user; P.room=code; P.isHost=false;
   P.members[user]={user,isHost:false};
   $('room-code-val').textContent=P.room;
+  $('nw-empty-sub').textContent='Waiting for the host to pick something to watch';
+  $('host-panel').style.display='none';
+  $('guest-panel').style.display='flex';
+  $('nw-empty').style.display='none';
   partyView('room'); partyStatus('🟡 Connecting…');
   updateMembers();
   chatMsg('','Joined — waiting for host…',true);
   P.channel=await connectWS(P.room,onChannelMsg);
   partyStatus('🟢 Guest');
   P.channel.send('join',{user,isHost:false});
+  // If host is already sharing, request the stream
+  setTimeout(()=>P.channel.send('request-stream',{user}),600);
 }
 
 function leaveRoom(){
   P.channel?.send('leave',{user:P.user});
   P.channel?.close(); P.channel=null;
   P.item=null; P.members={};
+  stopSharing();
+  cleanupPeerConnection();
   $('nw-empty').style.display='flex'; $('nw-info').style.display='none';
   partyView('lobby');
+}
+
+/* ══════════════════════════════════════════════════════
+   WEBRTC — Screen mirroring via getDisplayMedia
+   Signaling runs over the existing Supabase channel.
+   Video/audio flows directly P2P (not through Supabase).
+   ══════════════════════════════════════════════════════ */
+
+/* STUN servers for ICE negotiation (free Google STUN) */
+const RTC_CONFIG = {
+  iceServers:[
+    {urls:'stun:stun.l.google.com:19302'},
+    {urls:'stun:stun1.l.google.com:19302'},
+  ]
+};
+
+function createPeerConnection(){
+  cleanupPeerConnection();
+  const pc = new RTCPeerConnection(RTC_CONFIG);
+  P.pc = pc;
+
+  pc.onicecandidate = e=>{
+    if(e.candidate){
+      P.channel?.send('ice-candidate',{ candidate:e.candidate });
+    }
+  };
+
+  pc.onconnectionstatechange = ()=>{
+    const s = pc.connectionState;
+    if(s==='connected'){
+      P.rtcReady=true;
+      if(P.isHost){
+        setHostSharingUI(true);
+        chatMsg('','Screen sharing started — guests can see your screen',true);
+      } else {
+        setGuestStatus('connected');
+        chatMsg('','Live stream connected',true);
+      }
+    }
+    if(s==='disconnected'||s==='failed'){
+      P.rtcReady=false;
+      if(!P.isHost) setGuestStatus('disconnected');
+    }
+  };
+
+  // Guest: receive remote tracks from host
+  pc.ontrack = e=>{
+    P.remoteStream = e.streams[0];
+    const vid = $('guest-video');
+    if(vid){
+      vid.srcObject = P.remoteStream;
+      vid.play().catch(()=>{});
+      showGuestPlayer(true);
+    }
+  };
+
+  pc.onicegatheringstatechange = ()=>{
+    if(P.isHost) setHostStatus(`ICE: ${pc.iceGatheringState}`);
+  };
+
+  return pc;
+}
+
+function cleanupPeerConnection(){
+  if(P.pc){
+    P.pc.ontrack=null;
+    P.pc.onicecandidate=null;
+    P.pc.onconnectionstatechange=null;
+    P.pc.close();
+    P.pc=null;
+  }
+  P.rtcReady=false;
+}
+
+/* ── HOST: start screen share ── */
+async function startSharing(){
+  if(!P.channel){ toast('Join a room first'); return; }
+  if(!P.isHost){ toast('Only the host can share'); return; }
+
+  try{
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video:{ width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} },
+      audio:true,
+    });
+    P.localStream = stream;
+    P.sharingActive = true;
+
+    // Show host preview
+    const preview = $('host-preview');
+    if(preview){ preview.srcObject=stream; preview.play().catch(()=>{}); }
+
+    // Build RTCPeerConnection and add tracks
+    const pc = createPeerConnection();
+    stream.getTracks().forEach(track=>{
+      pc.addTrack(track, stream);
+    });
+
+    // If stream ends (user clicks browser "Stop sharing")
+    stream.getVideoTracks()[0].onended = ()=>{
+      stopSharing();
+    };
+
+    setHostStatus('Waiting for guest to connect…');
+    startWebRTCOffer();
+
+  } catch(err){
+    if(err.name==='NotAllowedError'){
+      toast('Screen share permission denied');
+    } else {
+      toast('Could not start screen share');
+      console.error(err);
+    }
+  }
+}
+
+async function startWebRTCOffer(){
+  if(!P.pc||!P.localStream) return;
+  try{
+    const offer = await P.pc.createOffer();
+    await P.pc.setLocalDescription(offer);
+    P.channel?.send('webrtc-offer',{ sdp: P.pc.localDescription });
+    setHostStatus('Offer sent — waiting for guest…');
+  } catch(err){
+    console.error('Offer failed',err);
+    toast('WebRTC offer failed');
+  }
+}
+
+function stopSharing(){
+  if(!P.sharingActive) return;
+  P.sharingActive=false;
+  // Stop all tracks
+  P.localStream?.getTracks().forEach(t=>t.stop());
+  P.localStream=null;
+  // Tell guests
+  P.channel?.send('share-stopped',{});
+  cleanupPeerConnection();
+  setHostSharingUI(false);
+  setHostStatus('Not sharing');
+  chatMsg('','Screen share stopped',true);
+  // Clear preview
+  const preview=$('host-preview');
+  if(preview){ preview.srcObject=null; }
+}
+
+/* ── GUEST: handle offer, create answer ── */
+async function handleWebRTCOffer(sdp){
+  try{
+    const pc = createPeerConnection();
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    P.channel?.send('webrtc-answer',{ sdp: pc.localDescription });
+    setGuestStatus('connecting');
+  } catch(err){
+    console.error('Answer failed',err);
+    setGuestStatus('error');
+  }
+}
+
+/* ── HOST: handle answer ── */
+async function handleWebRTCAnswer(sdp){
+  try{
+    if(P.pc && P.pc.signalingState!=='stable'){
+      await P.pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    }
+  } catch(err){
+    console.error('Set remote description failed',err);
+  }
+}
+
+/* ── Both: handle ICE candidate ── */
+async function handleICECandidate(candidate){
+  try{
+    if(P.pc && candidate){
+      await P.pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  } catch(err){
+    // Non-fatal: ICE candidate may arrive before peer connection is ready
+  }
+}
+
+/* ── UI helpers for WebRTC state ── */
+function setHostStatus(msg){
+  const el=$('host-status'); if(el) el.textContent=msg;
+}
+function setHostSharingUI(active){
+  $('start-share-btn')?.style && ($('start-share-btn').style.display=active?'none':'flex');
+  $('stop-share-btn')?.style && ($('stop-share-btn').style.display=active?'flex':'none');
+  $('host-preview-wrap')?.style && ($('host-preview-wrap').style.display=active?'block':'none');
+}
+function setGuestStatus(state){
+  const el=$('guest-status'); if(!el) return;
+  const states={
+    connecting:  {text:'Connecting to host…', cls:'status-connecting'},
+    connected:   {text:'🟢 Live',              cls:'status-connected'},
+    disconnected:{text:'🔴 Stream disconnected — waiting for host', cls:'status-disconnected'},
+    error:       {text:'⚠️ Connection error',  cls:'status-error'},
+  };
+  const s=states[state]||states.disconnected;
+  el.textContent=s.text;
+  el.className='guest-status '+s.cls;
+}
+function showGuestPlayer(visible){
+  const wrap=$('guest-player-wrap');
+  const empty=$('guest-empty');
+  if(wrap) wrap.style.display=visible?'block':'none';
+  if(empty) empty.style.display=visible?'none':'flex';
 }
 
 /* Party title search */
@@ -253,7 +509,7 @@ async function partySearch(q){
         <div><div class="ps-title">${ttl(item)}</div><div class="ps-meta">${yr(item)} · ${typ(item)==='tv'?'Series':'Movie'}</div></div>`;
       el.addEventListener('click',()=>{
         loadPartyTitle(item);
-        P.channel?.send('pick',{item});
+        P.channel?.send('pick',{item,by:P.user});
         $('party-search-input').value=''; res.innerHTML='';
         $('party-search-panel').classList.remove('open');
         toast(`Shared: ${ttl(item)}`);
@@ -600,19 +856,10 @@ document.addEventListener('DOMContentLoaded',()=>{
   $('join-btn').addEventListener('click',joinRoom);
   $('leave-btn').addEventListener('click',leaveRoom);
   $('copy-code-btn').addEventListener('click',()=>{ navigator.clipboard?.writeText(P.room).then(()=>toast('Code copied!')); });
-  $('watch-btn').addEventListener('click',()=>{
-    const url=$('watch-btn').dataset.url;
-    if(!url) return;
-    $('watch-iframe').src=url;
-    $('nw-player-title').textContent=$('nw-title').textContent;
-    $('nw-info').style.display='none';
-    $('nw-player').style.display='flex';
-  });
-  $('nw-player-exit').addEventListener('click',()=>{
-    $('watch-iframe').src='';
-    $('nw-player').style.display='none';
-    $('nw-info').style.display='flex';
-  });
+  /* ── WebRTC share buttons ── */
+  $('start-share-btn')?.addEventListener('click', startSharing);
+  $('stop-share-btn')?.addEventListener('click',  stopSharing);
+
   $('party-search-btn').addEventListener('click',()=>$('party-search-panel').classList.toggle('open'));
   $('party-search-input').addEventListener('input',e=>partySearch(e.target.value));
   $('chat-input').addEventListener('keydown',e=>{
